@@ -11390,11 +11390,62 @@ class OPNsenseMCPServer {
     const { method: _, params = {}, ...otherArgs } = args;
     const callParams = { ...params, ...otherArgs };
     
-    // Only pass parameters if there are any
-    if (Object.keys(callParams).length > 0) {
-      return await method.call(moduleObj, callParams);
+    // FIX: Detect methods with positional URL parameters in the client SDK.
+    // The SDK uses convention: method(urlParam1, urlParam2, ..., data?, config?)
+    // where urlParams are embedded in the URL template string.
+    // We detect this by checking if callParams contains known URL parameter names
+    // AND the method expects more than 1 argument (ruling out body-only POST with data+config).
+    const expectedArgCount = method.length;
+    
+    // Known URL parameter names used by the client SDK (in priority order)
+    const urlParamNames = [
+      'uuid', 'jobid', 'stateid', 'creatorid', 'status', 'section',
+      'provider', 'fromDate', 'toDate', 'resolution', 'field', 'emulation',
+      'measure', 'maxHits', 'macaddr', 'detail', 'interfaces',
+      'pollInterval', 'rrd', 'unused', 'format', 'nodeType', 'id',
+      'action', 'wait', 'details', 'fileno', 'page', 'perPage', 'query',
+      'enabled', 'name', 'alias', 'backup', 'host', 'interfaceName',
+      'identifier', 'vpnid', 'type', 'caref', 'zoneid', 'fileid',
+      'provider', 'sid', 'maximum'
+    ];
+    
+    // Heuristic: if method has >1 param AND callParams has a known URL param name,
+    // treat it as a positional URL method. Otherwise, pass as body data.
+    const hasUrlParam = urlParamNames.some(name => name in callParams);
+    const isPositionalMethod = expectedArgCount > 1 && hasUrlParam;
+    
+    if (!isPositionalMethod || Object.keys(callParams).length === 0) {
+      // Simple case: body-only method (data, config) or no params
+      if (Object.keys(callParams).length > 0) {
+        return await method.call(moduleObj, callParams);
+      } else {
+        return await method.call(moduleObj);
+      }
     } else {
-      return await method.call(moduleObj);
+      // Complex case: method expects positional URL parameters
+      // Extract known URL params in order, then pass remaining as data object
+      const positionalArgs = [];
+      let remainingParams = { ...callParams };
+      
+      // Extract known URL params in order (up to expectedArgCount - 1 for trailing data)
+      const maxUrlParams = Math.max(0, expectedArgCount - 1);
+      let extractedCount = 0;
+      
+      for (const paramName of urlParamNames) {
+        if (extractedCount >= maxUrlParams) break;
+        if (paramName in remainingParams) {
+          positionalArgs.push(remainingParams[paramName]);
+          delete remainingParams[paramName];
+          extractedCount++;
+        }
+      }
+      
+      // Pass remaining params as the data object (if any)
+      if (Object.keys(remainingParams).length > 0) {
+        positionalArgs.push(remainingParams);
+      }
+      
+      return await method.call(moduleObj, ...positionalArgs);
     }
   }
 
